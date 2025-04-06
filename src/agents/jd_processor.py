@@ -9,6 +9,16 @@ class JDProcessor:
     def __init__(self, db_session: Session):
         self.llm = Client()
         self.db = db_session
+        self._verify_model()
+        
+    def _verify_model(self):
+        try:
+            # Check if model exists
+            self.llm.show('llama3')
+        except Exception:
+            raise RuntimeError(
+                "Model 'llama3' not found. Run 'ollama pull llama3' first!"
+            )
 
     def process_csv(self, csv_path: str):
         try:

@@ -2,11 +2,19 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent.parent))
+
+from src.agents import JDProcessor
+from src.agents import CVProcessor
+from src.database.models import MatchScore
 
 engine = create_engine("sqlite:///recruitment.db")
 Session = sessionmaker(bind=engine)
 
-# Custom CSS
+# Custom CSSsr
 st.markdown("""
 <style>
     .match-header { color: #2ecc71; font-size: 1.8rem !important; }

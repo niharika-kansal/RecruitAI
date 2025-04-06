@@ -6,9 +6,9 @@ import os
 from pathlib import Path
 
 current_dir = Path(__file__).parent
-csv_path = os.path.join(current_dir, '..', 'data', 'job_description.csv')
+csv_path = os.path.join(current_dir, '..', 'data','default', 'job_description.csv')
 
-pdf_path = os.path.join(current_dir, '..', 'data', 'C2808.pdf')
+pdf_path = os.path.join(current_dir, '..', 'data','default','C2808.pdf')
 
 
 def match_all():

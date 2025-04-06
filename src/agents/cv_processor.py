@@ -8,6 +8,16 @@ class CVProcessor:
     def __init__(self, db_session):
         self.llm = Client()
         self.db = db_session
+        self._verify_model()
+        
+    def _verify_model(self):
+        try:
+            # Check if model exists
+            self.llm.show('llama3')
+        except Exception:
+            raise RuntimeError(
+                "Model 'llama3' not found. Run 'ollama pull llama3' first!"
+            )
 
     def process_pdf(self, file_path: str):
         text = self._extract_text(file_path)
