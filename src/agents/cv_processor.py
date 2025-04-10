@@ -1,63 +1,57 @@
+import os
 from PyPDF2 import PdfReader
-from ollama import Client
-from src.database.models import Candidate
-import re
 import json
+from src.database.models import Candidate
+from ollama import Client
 
 class CVProcessor:
-    def __init__(self, db_session):
-        self.llm = Client()
+    def __init__(self, db_session, upload_folder="data/resumes"):
+        self.client = Client()
         self.db = db_session
-        self._verify_model()
-        
-    def _verify_model(self):
-        try:
-            # Check if model exists
-            self.llm.show('llama3')
-        except Exception:
-            raise RuntimeError(
-                "Model 'llama3' not found. Run 'ollama pull llama3' first!"
-            )
+        self.upload_folder = upload_folder
 
-    def process_pdf(self, file_path: str):
-        text = self._extract_text(file_path)
-        structured_data = self._structure_data(text)
-        
-        candidate = Candidate(
-            name=structured_data.get("name", ""),
-            email=structured_data.get("email", ""),
-            education=structured_data.get("education", []),
-            experience=structured_data.get("experience", []),
-            skills=structured_data.get("skills", []),
-            certifications=structured_data.get("certifications", [])
-        )
-        self.db.add(candidate)
+    def process_pdfs(self, pdf_files):
+        with self.db.no_autoflush:
+            for idx, pdf_file in enumerate(pdf_files, start=1):
+                file_path = self._save_pdf(pdf_file)
+                text = self._extract_text(file_path)
+                candidate_data = self._parse_cv(text)
+                candidate = Candidate(
+                    name=candidate_data.get('name', 'Unknown'),
+                    skills=candidate_data.get('skills', []),
+                    experience=candidate_data.get('experience', []),
+                    education=candidate_data.get('education', []),
+                    resume_path=file_path
+                )
+                self.db.merge(candidate)
+                if idx % 5 == 0:
+                    self.db.commit()
+                    print(f"Processed {idx} resumes...")
         self.db.commit()
-        return candidate
 
-    def _extract_text(self, path: str) -> str:
-        with open(path, "rb") as f:
-            reader = PdfReader(f)
-            return "\n".join([page.extract_text() for page in reader.pages])
-
-    def _structure_data(self, text: str) -> dict:
-        prompt = f"""Extract as JSON:
-        {{
-            "name": "full name",
-            "email": "email address",
-            "education": [{{"degree": "", "university": "", "years": ""}}],
-            "experience": [{{"title": "", "company": "", "duration": ""}}],
-            "skills": ["list of technical skills"],
-            "certifications": ["list of certifications"]
-        }}
-        From Resume Text: {text}"""
-        
-        response = self.llm.generate(model="llama3", prompt=prompt)
-        return self._clean_response(response["response"])
-
-    def _clean_response(self, text: str) -> dict:
+    def _parse_cv(self, text: str) -> dict:
+        prompt = f"""Extract JSON:
+{{
+    "name": "full name",
+    "skills": ["list"],
+    "experience": [{{"title": "", "years": ""}}],
+    "education": [{{"degree": "", "university": ""}}]
+}}
+From: {text}"""
         try:
-            clean = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", text)  # Remove non-printables
-            return json.loads(clean)
-        except:
+            response = self.client.generate(model='llama3', prompt=prompt)
+            return json.loads(response['response'])
+        except Exception as e:
+            print("CV parsing error:", e)
             return {}
+
+    def _save_pdf(self, uploaded_file):
+        os.makedirs(self.upload_folder, exist_ok=True)
+        file_path = os.path.join(self.upload_folder, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return file_path
+
+    def _extract_text(self, path: str):
+        with open(path, "rb") as f:
+            return "\n".join([page.extract_text() for page in PdfReader(f).pages])

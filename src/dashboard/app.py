@@ -2,78 +2,116 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-import sys
-from pathlib import Path
+from src.agents import JDProcessor, CVProcessor, CVMatcher
+from src.database.models import Job, Candidate, Match, Base
+import os
+import time
 
-sys.path.append(str(Path(__file__).parent.parent))
+# 🔧 Disable Streamlit file watcher to prevent torch errors
+os.environ["STREAMLIT_WATCH"] = "false"
 
-from src.agents import JDProcessor
-from src.agents import CVProcessor
-from src.database.models import MatchScore
-
+# Database setup
 engine = create_engine("sqlite:///recruitment.db")
+Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 
-# Custom CSSsr
+# App UI setup
+st.set_page_config(page_title="AI Recruiter", layout="wide")
 st.markdown("""
 <style>
-    .match-header { color: #2ecc71; font-size: 1.8rem !important; }
-    .skill-match { padding: 8px; background: #f0f2f6; border-radius: 5px; }
+    .job-card { padding: 20px; margin: 10px 0; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .top-match { color: #2ecc71; font-weight: 700; }
+    .skill-chip { background: #f0f2f6; padding: 5px 10px; border-radius: 15px; margin: 3px; display: inline-block; }
+    .stProgress > div > div > div { background-color: #3498db !important; }
 </style>
 """, unsafe_allow_html=True)
 
 def main():
-    st.title("🔍 CV-Job Matching Dashboard")
-    
+    st.title("🤖 AI Recruitment Dashboard")
+
+    with st.sidebar:
+        st.header("📁 Data Upload")
+        jd_file = st.file_uploader("Upload Job Descriptions (CSV)", type=["csv"])
+        cv_files = st.file_uploader("Upload Resumes (PDF)", type=["pdf"], accept_multiple_files=True)
+
+        if st.button("🚀 Process Files", type="primary"):
+            with st.spinner("Analyzing files..."):
+                start_time = time.time()
+                with Session() as session:
+                    # Process job descriptions
+                    if jd_file:
+                        st.info("Processing uploaded job description CSV...")
+                        JDProcessor(session).process_csv(jd_file)
+                    else:
+                        # fallback to default job_description.csv
+                        st.warning("No job description file uploaded. Using default `data/job_description.csv`.")
+                        JDProcessor(session).process_csv("data/job_description.csv")
+
+                    # Process resumes
+                    if cv_files:
+                        st.info(f"Processing {len(cv_files)} resumes...")
+                        CVProcessor(session).process_pdfs(cv_files)
+                    else:
+                        st.warning("No resumes uploaded!")
+
+                    # Match candidates to jobs
+                    st.info("Calculating matches...")
+                    jobs = session.query(Job).all()
+                    candidates = session.query(Candidate).all()
+
+                    matches = CVMatcher().calculate_matches(jobs, candidates)
+
+                    session.query(Match).delete()
+                    for idx, match in enumerate(matches):
+                        session.add(Match(**match))
+                        if idx % 5 == 0:
+                            st.write(f"✅ {idx}/{len(matches)} matches processed...")
+
+                    session.commit()
+                    st.success(f"✅ All processing done in {time.time() - start_time:.2f} seconds!")
+
+    # Display results
     with Session() as session:
-        # File Uploaders
-        col1, col2 = st.columns(2)
-        with col1:
-            jd_file = st.file_uploader("Upload Job Descriptions CSV", type=["csv"])
-            if jd_file:
-                processor = JDProcessor(session)
-                processor.process_csv(jd_file)
-                
-        with col2:
-            cv_file = st.file_uploader("Upload Candidate CV (PDF)", type=["pdf"])
-            if cv_file:
-                processor = CVProcessor(session)
-                processor.process_pdf(cv_file.name)
-        
-        # Display Matches
-        st.subheader("📊 Best Matches", divider="green")
-        matches = pd.read_sql("""
-            SELECT j.title, c.name, m.score 
-            FROM matches m
-            JOIN jobs j ON m.job_id = j.id
-            JOIN candidates c ON m.candidate_id = c.id
-            ORDER BY m.score DESC
-        """, session.connection())
-        
-        if not matches.empty:
-            st.dataframe(matches.style.background_gradient(cmap="Blues"), use_container_width=True)
-            
-            best = matches.iloc[0]
-            st.markdown(f"""
-                ### 🏆 Top Match
-                **Job:** {best['title']}  
-                **Candidate:** {best['name']}  
-                **Score:** <span class='match-header'>{best['score']*100:.1f}%</span>
-            """, unsafe_allow_html=True)
-            
-            # Skill Matching Details
-            st.subheader("🔧 Skill Alignment")
-            match_data = session.query(MatchScore).first()
-            if match_data:
+        st.header("🏆 Best Matches Per Job")
+        # jobs = session.query(Job).all()
+
+        for job in jobs:
+            with st.container():
+                st.markdown(f"""
+                <div class='job-card'>
+                    <h3>{job.title}</h3>
+                    <p>{job.description[:200]}...</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                matches = (session.query(Match, Candidate)
+                           .join(Candidate)
+                           .filter(Match.job_id == job.id)
+                           .order_by(Match.score.desc())
+                           .limit(3)
+                           .all())
+
                 cols = st.columns(3)
-                for i, skill in enumerate(match_data.skill_match[:6]):
-                    cols[i%3].markdown(f"""
-                        <div class='skill-match'>
-                            ✅ {skill}
-                        </div>
-                    """, unsafe_allow_html=True)
-        else:
-            st.warning("No matches found. Upload data first!")
+                for idx, (match, candidate) in enumerate(matches):
+                    with cols[idx]:
+                        st.subheader(f"🥇 Top {idx+1}")
+                        st.markdown(f"""
+                            **Candidate:** {candidate.name}  
+                            **Score:** <span class='top-match'>{match.score*100:.1f}%</span>
+                        """, unsafe_allow_html=True)
+
+                        st.write("**Key Matching Skills:**")
+                        for skill in match.matched_skills[:5]:
+                            st.markdown(f"<div class='skill-chip'>{skill}</div>", unsafe_allow_html=True)
+
+                        with st.expander("📄 Resume Details"):
+                            st.write("**Experience:**")
+                            for exp in candidate.experience:
+                                st.write(f"- {exp.get('title', '')} ({exp.get('years', '')} yrs)")
+
+                            st.write("**Education:**")
+                            for edu in candidate.education:
+                                st.write(f"- {edu.get('degree', '')}")
 
 if __name__ == "__main__":
     main()
